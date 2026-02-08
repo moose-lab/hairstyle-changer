@@ -1,17 +1,23 @@
-import { Router, Request, Response } from "express";
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 import axios from "axios";
 import { z } from "zod";
 import { put, del } from "@vercel/blob";
 
-const router = Router();
+// Allow up to 120s for AI image generation (polling can take a while)
+export const config = { maxDuration: 120 };
 
-// Validation schema
+// --- Validation ---
+
 const generateRequestSchema = z.object({
   image: z.string().min(1, "Image is required"),
-  prompt: z.string().min(1, "Prompt is required").max(500, "Prompt is too long"),
+  prompt: z
+    .string()
+    .min(1, "Prompt is required")
+    .max(500, "Prompt is too long"),
 });
 
-// --- WaveSpeed Nano Banana Pro Edit API types ---
+// --- WaveSpeed API types ---
+
 interface WaveSpeedSubmitResponse {
   code: number;
   message: string;
@@ -37,6 +43,7 @@ interface WaveSpeedResultResponse {
 }
 
 // --- Gemini API types (fallback) ---
+
 interface GeminiPart {
   text?: string;
   inline_data?: { mime_type: string; data: string };
@@ -47,7 +54,8 @@ interface GeminiResponse {
   error?: { message: string };
 }
 
-// Build the v3.1 skill prompt for hairstyle change
+// --- Helpers ---
+
 function buildHairstylePrompt(userPrompt: string): string {
   return `Change ONLY the hair. ${userPrompt}
 
@@ -56,7 +64,6 @@ Keep everything else exactly as in the original: face, skin tone, lighting, back
 Photorealistic, professional quality, natural lighting, high detail.`;
 }
 
-// Helper to extract base64 data from data URL
 function extractBase64(dataUrl: string): { mimeType: string; data: string } {
   const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!matches) {
@@ -65,18 +72,15 @@ function extractBase64(dataUrl: string): { mimeType: string; data: string } {
   return { mimeType: matches[1], data: matches[2] };
 }
 
-// Helper to calculate base64 size in bytes
 function getBase64Size(base64String: string): number {
   const base64Data = base64String.replace(/^data:[^;]+;base64,/, "");
   return (base64Data.length * 3) / 4;
 }
 
-// Sleep helper for polling
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Upload base64 data URL to Vercel Blob and return a public URL
 async function uploadToBlob(dataUrl: string): Promise<{ url: string }> {
   const { mimeType, data } = extractBase64(dataUrl);
   const buffer = Buffer.from(data, "base64");
@@ -91,7 +95,6 @@ async function uploadToBlob(dataUrl: string): Promise<{ url: string }> {
   return { url: blob.url };
 }
 
-// Clean up uploaded blob (fire-and-forget)
 function cleanupBlob(url: string): void {
   del(url).catch((err) =>
     console.warn("[hairstyle] Failed to clean up blob:", err.message)
@@ -99,6 +102,7 @@ function cleanupBlob(url: string): void {
 }
 
 // --- WaveSpeed Nano Banana Pro Edit API ---
+
 async function generateWithWaveSpeed(
   apiKey: string,
   imageDataUrl: string,
@@ -154,7 +158,7 @@ async function generateWithWaveSpeed(
 
     // Step 3: Poll for result (if async)
     const taskId = submitData.data.id;
-    const maxAttempts = 60; // 2 minutes max (60 * 2s)
+    const maxAttempts = 60;
 
     for (let i = 0; i < maxAttempts; i++) {
       await sleep(2000);
@@ -179,18 +183,16 @@ async function generateWithWaveSpeed(
       if (resultData.data.status === "failed") {
         throw new Error("Image generation failed on the server");
       }
-
-      // status is "processing" or "queued" — continue polling
     }
 
     throw new Error("Timeout waiting for image generation result");
   } finally {
-    // Always clean up the temporary blob
     cleanupBlob(imageUrl);
   }
 }
 
 // --- Gemini API (fallback) ---
+
 async function generateWithGemini(
   apiKey: string,
   imageData: { mimeType: string; data: string },
@@ -237,100 +239,81 @@ async function generateWithGemini(
   return `data:${imagePart.inline_data.mime_type};base64,${imagePart.inline_data.data}`;
 }
 
-// POST /api/hairstyle/generate
-router.post("/generate", async (req: Request, res: Response): Promise<void> => {
+// --- Serverless handler ---
+
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
+  // Only allow POST
+  if (req.method !== "POST") {
+    return res.status(405).json({ success: false, error: "Method not allowed" });
+  }
+
+  // Validate request body
+  const parseResult = generateRequestSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({
+      success: false,
+      error: parseResult.error.issues[0].message,
+    });
+  }
+
+  const { image, prompt } = parseResult.data;
+
+  // Check image size (max 10MB)
+  const imageSize = getBase64Size(image);
+  const maxSize = 10 * 1024 * 1024;
+  if (imageSize > maxSize) {
+    return res.status(400).json({
+      success: false,
+      error: `Image is too large. Maximum size is 10MB, got ${(imageSize / 1024 / 1024).toFixed(2)}MB`,
+    });
+  }
+
+  // Extract base64 data
+  let imageDataParsed: { mimeType: string; data: string };
   try {
-    // Validate request body
-    const parseResult = generateRequestSchema.safeParse(req.body);
-    if (!parseResult.success) {
-      res.status(400).json({
-        success: false,
-        error: parseResult.error.issues[0].message,
-      });
-      return;
-    }
+    imageDataParsed = extractBase64(image);
+  } catch {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid image format. Expected base64-encoded data URL",
+    });
+  }
 
-    const { image, prompt } = parseResult.data;
+  // Determine which API to use
+  const wavespeedKey = process.env.WAVESPEED_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
 
-    // Check image size (max 10MB)
-    const imageSize = getBase64Size(image);
-    const maxSize = 10 * 1024 * 1024;
-    if (imageSize > maxSize) {
-      res.status(400).json({
-        success: false,
-        error: `Image is too large. Maximum size is 10MB, got ${(imageSize / 1024 / 1024).toFixed(2)}MB`,
-      });
-      return;
-    }
+  if (!wavespeedKey && !geminiKey) {
+    return res.status(500).json({
+      success: false,
+      error: "API key not configured. Set WAVESPEED_API_KEY or GEMINI_API_KEY.",
+    });
+  }
 
-    // Extract base64 data
-    let imageDataParsed: { mimeType: string; data: string };
-    try {
-      imageDataParsed = extractBase64(image);
-    } catch {
-      res.status(400).json({
-        success: false,
-        error: "Invalid image format. Expected base64-encoded data URL",
-      });
-      return;
-    }
-
-    // Determine which API to use
-    const wavespeedKey = process.env.WAVESPEED_API_KEY;
-    const geminiKey = process.env.GEMINI_API_KEY;
-
+  try {
     let generatedImage: string;
 
     if (wavespeedKey) {
-      // Primary: WaveSpeed Nano Banana Pro Edit API
       console.log("[hairstyle] Using WaveSpeed Nano Banana Pro Edit API");
       generatedImage = await generateWithWaveSpeed(wavespeedKey, image, prompt);
-    } else if (geminiKey) {
-      // Fallback: Gemini API
+    } else {
       console.log("[hairstyle] Using Gemini API (fallback)");
       generatedImage = await generateWithGemini(
-        geminiKey,
+        geminiKey!,
         imageDataParsed,
         prompt
       );
-    } else {
-      res.status(500).json({
-        success: false,
-        error:
-          "API key not configured. Set WAVESPEED_API_KEY or GEMINI_API_KEY.",
-      });
-      return;
     }
 
-    res.json({ success: true, image: generatedImage });
+    return res.status(200).json({ success: true, image: generatedImage });
   } catch (error) {
     console.error("Error in hairstyle generation:", error);
 
-    if (axios.isAxiosError(error)) {
-      if (error.code === "ECONNABORTED") {
-        res.status(504).json({
-          success: false,
-          error: "Request timeout - the AI took too long to respond",
-        });
-        return;
-      }
-      if (error.response) {
-        const msg =
-          error.response.data?.message ||
-          error.response.statusText ||
-          "Unknown API error";
-        res.status(error.response.status).json({
-          success: false,
-          error: `AI service error: ${msg}`,
-        });
-        return;
-      }
-    }
-
     const message =
       error instanceof Error ? error.message : "Internal server error";
-    res.status(500).json({ success: false, error: message });
+    return res.status(500).json({ success: false, error: message });
   }
-});
-
-export default router;
+}
