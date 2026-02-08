@@ -1,10 +1,79 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ImageUpload } from "@/components/ImageUpload";
+import { ResultDisplay } from "@/components/ResultDisplay";
+import HairstyleSelector from "@/components/HairstyleSelector";
 import { Sparkles, Shield, Palette, Check } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { toast } from "sonner";
 
 export default function Home() {
   const observerRef = useRef<IntersectionObserver | null>(null);
+
+  // Hairstyle changer state
+  const [imageData, setImageData] = useState<string | null>(null);
+  const [imageMimeType, setImageMimeType] = useState<string>("image/jpeg");
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState<string>("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [resultImage, setResultImage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleImageSelect = useCallback((base64Data: string, mimeType: string) => {
+    setImageData(base64Data);
+    setImageMimeType(mimeType);
+    setPreviewUrl(`data:${mimeType};base64,${base64Data}`);
+    // Clear previous results when a new image is selected
+    setResultImage(null);
+    setError(null);
+  }, []);
+
+  const handleGenerate = useCallback(async () => {
+    if (!imageData || !prompt.trim()) {
+      toast.error("Missing input", {
+        description: "Please upload a photo and describe your desired hairstyle.",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setResultImage(null);
+
+    try {
+      const response = await fetch("/api/hairstyle/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: `data:${imageMimeType};base64,${imageData}`,
+          prompt: prompt.trim(),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Failed to generate hairstyle");
+      }
+
+      setResultImage(data.image);
+      toast.success("Hairstyle generated!", {
+        description: "Check out your new look below.",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Something went wrong";
+      setError(message);
+      toast.error("Generation failed", { description: message });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [imageData, imageMimeType, prompt]);
+
+  const handleReset = useCallback(() => {
+    setResultImage(null);
+    setError(null);
+    setIsLoading(false);
+  }, []);
 
   useEffect(() => {
     // Intersection Observer for entrance animations
@@ -214,55 +283,80 @@ export default function Home() {
       {/* Demo Section */}
       <section id="demo" className="py-24 bg-gradient-to-b from-gray-50 to-white">
         <div className="container">
-          <div className="max-w-4xl mx-auto">
-            <div className="text-center mb-12 fade-in-up">
-              <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">
-                Try It Yourself
-              </h2>
-              <p className="text-xl text-gray-600">
-                Upload your photo and describe your dream hairstyle. See the magic happen in seconds.
-              </p>
-            </div>
-            
-            <Card className="fade-in-up border-2 border-purple-200">
+          <div className="text-center mb-12 fade-in-up">
+            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">
+              Try It Yourself
+            </h2>
+            <p className="text-xl text-gray-600">
+              Upload your photo and describe your dream hairstyle. See the magic happen in seconds.
+            </p>
+          </div>
+
+          {/* Left-Right Layout: Input | Output */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 max-w-7xl mx-auto fade-in-up">
+            {/* Left Panel: Upload + Hairstyle Selector + Generate */}
+            <Card className="border-2 border-purple-200 h-fit">
               <CardContent className="pt-8">
                 <div className="space-y-6">
+                  {/* Step 1: Upload Photo */}
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">
                       Upload Your Photo
                     </label>
-                    <div className="border-2 border-dashed border-gray-300 rounded-xl p-12 text-center hover:border-purple-400 transition-colors cursor-pointer">
-                      <div className="text-gray-400 mb-2">
-                        <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                        </svg>
-                      </div>
-                      <p className="text-sm text-gray-600">Click to upload or drag and drop</p>
-                      <p className="text-xs text-gray-500 mt-1">PNG, JPEG, WEBP up to 10MB</p>
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Describe Your Desired Hairstyle
-                    </label>
-                    <textarea
-                      className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"
-                      rows={4}
-                      placeholder="Example: Short pink hair with see-through bangs, or long blue-purple highlights..."
+                    <ImageUpload
+                      onImageSelect={handleImageSelect}
+                      selectedImage={previewUrl}
+                      disabled={isLoading}
                     />
                   </div>
-                  
-                  <Button className="w-full gradient-button text-lg py-6 h-auto">
-                    Generate My New Look
+
+                  {/* Step 2: Choose / Describe Hairstyle */}
+                  <HairstyleSelector
+                    onPromptChange={setPrompt}
+                    prompt={prompt}
+                    disabled={isLoading}
+                  />
+
+                  {/* Generate Button */}
+                  <Button
+                    className="w-full gradient-button text-lg py-6 h-auto"
+                    onClick={handleGenerate}
+                    disabled={isLoading || !imageData || !prompt.trim()}
+                  >
+                    {isLoading ? "Generating..." : "Generate My New Look"}
                   </Button>
-                  
-                  <p className="text-center text-sm text-gray-500">
-                    This is a demo interface. Full functionality coming soon.
-                  </p>
                 </div>
               </CardContent>
             </Card>
+
+            {/* Right Panel: Progress + Result Output */}
+            <div className="flex items-start justify-center">
+              {!isLoading && !error && !resultImage ? (
+                <Card className="w-full border-2 border-dashed border-gray-200 h-full min-h-[400px] flex items-center justify-center">
+                  <CardContent className="text-center py-16">
+                    <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-gradient-to-br from-purple-100 to-pink-100 flex items-center justify-center">
+                      <Sparkles className="w-10 h-10 text-purple-400" />
+                    </div>
+                    <h3 className="text-xl font-semibold text-gray-400 mb-2">
+                      Your Result Will Appear Here
+                    </h3>
+                    <p className="text-gray-400 text-sm max-w-xs mx-auto">
+                      Upload a photo and choose a hairstyle to see your transformation
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="w-full">
+                  <ResultDisplay
+                    originalImage={previewUrl}
+                    resultImage={resultImage}
+                    isLoading={isLoading}
+                    error={error}
+                    onReset={handleReset}
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </section>
