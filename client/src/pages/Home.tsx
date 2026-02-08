@@ -3,11 +3,36 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ImageUpload } from "@/components/ImageUpload";
 import { ResultDisplay } from "@/components/ResultDisplay";
 import HairstyleSelector from "@/components/HairstyleSelector";
-import { Sparkles, Shield, Palette, Check } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
+import { Sparkles, Shield, Palette, Check, Coins, User, LogIn } from "lucide-react";
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useLocation } from "wouter";
 import { toast } from "sonner";
+import { ANONYMOUS_FREE_TRIES, INITIAL_CREDITS } from "@shared/const";
+
+const ANON_TRIES_KEY = "hairstyle_anon_tries";
+
+function getAnonTries(): number {
+  try {
+    return parseInt(localStorage.getItem(ANON_TRIES_KEY) || "0", 10);
+  } catch {
+    return 0;
+  }
+}
+
+function incrementAnonTries(): number {
+  const next = getAnonTries() + 1;
+  try {
+    localStorage.setItem(ANON_TRIES_KEY, String(next));
+  } catch {
+    // localStorage unavailable — allow anyway
+  }
+  return next;
+}
 
 export default function Home() {
+  const [, setLocation] = useLocation();
+  const { user, credits, refreshCredits } = useAuth();
   const observerRef = useRef<IntersectionObserver | null>(null);
 
   // Hairstyle changer state
@@ -18,6 +43,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [anonTriesUsed, setAnonTriesUsed] = useState(getAnonTries);
 
   const handleImageSelect = useCallback((base64Data: string, mimeType: string) => {
     setImageData(base64Data);
@@ -36,6 +62,23 @@ export default function Home() {
       return;
     }
 
+    // Gate: anonymous users limited to ANONYMOUS_FREE_TRIES
+    if (!user && anonTriesUsed >= ANONYMOUS_FREE_TRIES) {
+      toast.error("Free tries used up", {
+        description: `Sign up to get ${INITIAL_CREDITS} free credits and keep transforming!`,
+      });
+      setLocation("/signup");
+      return;
+    }
+
+    // Gate: authenticated users need credits
+    if (user && credits !== null && credits <= 0) {
+      toast.error("No credits remaining", {
+        description: "You've used all your credits. More purchasing options coming soon.",
+      });
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
     setResultImage(null);
@@ -44,6 +87,7 @@ export default function Home() {
       const response = await fetch("/api/hairstyle/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           image: `data:${imageMimeType};base64,${imageData}`,
           prompt: prompt.trim(),
@@ -57,9 +101,28 @@ export default function Home() {
       }
 
       setResultImage(data.image);
-      toast.success("Hairstyle generated!", {
-        description: "Check out your new look below.",
-      });
+
+      if (user) {
+        // Refresh credits from server after successful generation
+        await refreshCredits();
+        toast.success("Hairstyle generated!", {
+          description: `Check out your new look! ${data.credits ?? ""} credits remaining.`,
+        });
+      } else {
+        // Track anonymous usage
+        const newCount = incrementAnonTries();
+        setAnonTriesUsed(newCount);
+        const remaining = ANONYMOUS_FREE_TRIES - newCount;
+        if (remaining > 0) {
+          toast.success("Hairstyle generated!", {
+            description: `${remaining} free ${remaining === 1 ? "try" : "tries"} remaining. Sign up for ${INITIAL_CREDITS} more!`,
+          });
+        } else {
+          toast.success("Hairstyle generated!", {
+            description: `That was your last free try. Sign up to get ${INITIAL_CREDITS} credits!`,
+          });
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Something went wrong";
       setError(message);
@@ -67,7 +130,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [imageData, imageMimeType, prompt]);
+  }, [imageData, imageMimeType, prompt, user, credits, anonTriesUsed, refreshCredits, setLocation]);
 
   const handleReset = useCallback(() => {
     setResultImage(null);
@@ -102,10 +165,63 @@ export default function Home() {
     demoSection?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // Determine what to show for the generate button area
+  const canGenerate = user
+    ? (credits === null || credits > 0) // logged in: allow if credits unknown or > 0
+    : anonTriesUsed < ANONYMOUS_FREE_TRIES; // anonymous: allow if under limit
+
   return (
     <div className="min-h-screen">
+      {/* Auth Header */}
+      <header className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-200/50">
+        <div className="container flex items-center justify-between h-14">
+          <button
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            className="text-lg font-black gradient-text"
+          >
+            AI Hairstyle Changer
+          </button>
+          <div className="flex items-center gap-3">
+            {user ? (
+              <>
+                <div className="flex items-center gap-1.5 bg-purple-50 px-3 py-1.5 rounded-full text-sm font-medium text-purple-700">
+                  <Coins className="w-3.5 h-3.5" />
+                  {credits ?? "..."} credits
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => setLocation("/account")}
+                >
+                  <User className="w-4 h-4" />
+                  {user.name || "Account"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setLocation("/login")}
+                >
+                  Sign In
+                </Button>
+                <Button
+                  size="sm"
+                  className="gradient-button"
+                  onClick={() => setLocation("/signup")}
+                >
+                  Sign Up Free
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      </header>
+
       {/* Hero Section */}
-      <section className="relative overflow-hidden animated-gradient min-h-screen flex items-center">
+      <section className="relative overflow-hidden animated-gradient min-h-screen flex items-center pt-14">
         <div className="absolute inset-0 opacity-30">
           <img
             src="https://private-us-east-1.manuscdn.com/sessionFile/21kOF6EWp9VrrrhRPQNOzS/sandbox/SreMNeY8q6SNFW1tE1iKlB-img-1_1770372703000_na1fn_aGVyby1iYWNrZ3JvdW5k.png?x-oss-process=image/resize,w_1920,h_1920/format,webp/quality,q_80&Expires=1798761600&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9wcml2YXRlLXVzLWVhc3QtMS5tYW51c2Nkbi5jb20vc2Vzc2lvbkZpbGUvMjFrT0Y2RVdwOVZycnJoUlBRTk96Uy9zYW5kYm94L1NyZU1OZVk4cTZTTkZXMXRFMWlLbEItaW1nLTFfMTc3MDM3MjcwMzAwMF9uYTFmbl9hR1Z5YnkxaVlXTnJaM0p2ZFc1ay5wbmc~eC1vc3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUsd18xOTIwLGhfMTkyMC9mb3JtYXQsd2VicC9xdWFsaXR5LHFfODAiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3OTg3NjE2MDB9fX1dfQ__&Key-Pair-Id=K2HSFNDJXOU9YS&Signature=fnjDIl-YCym4WIgePOSBZpFOpZNWl8Hme0CdiNUW0sk0VOJXQbbJ2QUm~Wj8I7bgZxlbCC2Qzp9q0xdFFk41Ii9LCeMmmsyYg0ANNqf-Izi9gGoK5dRtaRv2iNtxFQf~RnTzvyw0IYC3xa3hdTSOPVpk-1obgUCo4XhKuXlQnHlHJRfytxR1rUYlVYigp1jGEIcUCxsRg6lna8v6hAMtkSoYjxHRPhtfY0W75ual8R4W8zSSJUhhO8GXvvn1u6Ongt54Z17a5Vsg-v5Hvcp7f5QvBLQY3tZrb~cpfvOtSAvqbtYRXG0DFsW7wq-HT1xjHNjtwT~UI1ua4Nq5LrDolw__"
@@ -131,7 +247,11 @@ export default function Home() {
               >
                 Try It Free
               </Button>
-              <p className="text-white/70 mt-4 text-sm">No signup required • Unlimited tries</p>
+              <p className="text-white/70 mt-4 text-sm">
+                {user
+                  ? `${credits ?? "..."} credits remaining`
+                  : `${Math.max(0, ANONYMOUS_FREE_TRIES - anonTriesUsed)} free ${ANONYMOUS_FREE_TRIES - anonTriesUsed === 1 ? "try" : "tries"} • No signup required`}
+              </p>
             </div>
             
             <div className="fade-in-up" style={{ transitionDelay: "0.2s" }}>
@@ -317,14 +437,51 @@ export default function Home() {
                     disabled={isLoading}
                   />
 
-                  {/* Generate Button */}
-                  <Button
-                    className="w-full gradient-button text-lg py-6 h-auto"
-                    onClick={handleGenerate}
-                    disabled={isLoading || !imageData || !prompt.trim()}
-                  >
-                    {isLoading ? "Generating..." : "Generate My New Look"}
-                  </Button>
+                  {/* Generate Button + Status */}
+                  {canGenerate ? (
+                    <Button
+                      className="w-full gradient-button text-lg py-6 h-auto"
+                      onClick={handleGenerate}
+                      disabled={isLoading || !imageData || !prompt.trim()}
+                    >
+                      {isLoading ? "Generating..." : "Generate My New Look"}
+                    </Button>
+                  ) : user ? (
+                    <div className="text-center space-y-3">
+                      <p className="text-sm text-gray-500">You're out of credits.</p>
+                      <Button
+                        className="w-full"
+                        variant="outline"
+                        onClick={() => setLocation("/account")}
+                      >
+                        View Account
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="text-center space-y-3">
+                      <p className="text-sm text-gray-500">
+                        You've used your {ANONYMOUS_FREE_TRIES} free tries.
+                      </p>
+                      <Button
+                        className="w-full gradient-button text-lg py-6 h-auto"
+                        onClick={() => setLocation("/signup")}
+                      >
+                        <LogIn className="w-5 h-5 mr-2" />
+                        Sign Up for {INITIAL_CREDITS} Free Credits
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Credit / Trial Status */}
+                  <div className="text-center text-xs text-gray-400">
+                    {user ? (
+                      <span>{credits ?? "..."} credits remaining • 1 credit per generation</span>
+                    ) : anonTriesUsed < ANONYMOUS_FREE_TRIES ? (
+                      <span>
+                        {ANONYMOUS_FREE_TRIES - anonTriesUsed} of {ANONYMOUS_FREE_TRIES} free tries remaining
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -416,14 +573,33 @@ export default function Home() {
               Ready to Transform Your Look?
             </h2>
             <p className="text-xl mb-8 text-white/90">
-              Try it free - no signup required. See yourself with any hairstyle in seconds.
+              {user
+                ? "Head to the demo above and use your credits to try new styles."
+                : `Try ${ANONYMOUS_FREE_TRIES} hairstyles free, then sign up for ${INITIAL_CREDITS} more credits.`}
             </p>
-            <Button
-              onClick={scrollToDemo}
-              className="bg-white text-purple-600 hover:bg-white/90 font-bold text-lg px-8 py-6 h-auto rounded-full shadow-xl hover:scale-105 transition-transform"
-            >
-              Get Started Now
-            </Button>
+            {user ? (
+              <Button
+                onClick={scrollToDemo}
+                className="bg-white text-purple-600 hover:bg-white/90 font-bold text-lg px-8 py-6 h-auto rounded-full shadow-xl hover:scale-105 transition-transform"
+              >
+                Try a New Style
+              </Button>
+            ) : (
+              <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                <Button
+                  onClick={scrollToDemo}
+                  className="bg-white text-purple-600 hover:bg-white/90 font-bold text-lg px-8 py-6 h-auto rounded-full shadow-xl hover:scale-105 transition-transform"
+                >
+                  Try It Free
+                </Button>
+                <Button
+                  onClick={() => setLocation("/signup")}
+                  className="bg-white/20 text-white hover:bg-white/30 font-bold text-lg px-8 py-6 h-auto rounded-full border-2 border-white/40 hover:scale-105 transition-transform"
+                >
+                  Sign Up for {INITIAL_CREDITS} Credits
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </section>

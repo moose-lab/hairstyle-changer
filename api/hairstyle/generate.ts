@@ -2,6 +2,10 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import axios from "axios";
 import { z } from "zod";
 import { put, del } from "@vercel/blob";
+import { getAuthUser } from "../../lib/auth-middleware";
+import { getCreditBalance, deductCredit, addCredits } from "../../lib/credits";
+import { getDb } from "../../lib/db";
+import { GENERATION_COST } from "../../shared/const";
 
 // Allow up to 120s for AI image generation (polling can take a while)
 export const config = { maxDuration: 120 };
@@ -250,6 +254,25 @@ export default async function handler(
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
 
+  // --- Auth & Credit Check ---
+  const user = await getAuthUser(req);
+  let isAnonymous = false;
+
+  if (user) {
+    // Authenticated: check credit balance
+    const balance = await getCreditBalance(user.id);
+    if (balance < GENERATION_COST) {
+      return res.status(403).json({
+        success: false,
+        error: "Insufficient credits",
+        credits: balance,
+      });
+    }
+  } else {
+    // Anonymous: allowed (frontend tracks tries via localStorage)
+    isAnonymous = true;
+  }
+
   // Validate request body
   const parseResult = generateRequestSchema.safeParse(req.body);
   if (!parseResult.success) {
@@ -293,8 +316,41 @@ export default async function handler(
     });
   }
 
+  // --- Deduct credit before generation (authenticated users only) ---
+  let generationId: string | null = null;
+  if (user) {
+    const sql = getDb();
+    const trimmedPrompt = prompt.trim();
+    const rows = await sql`
+      INSERT INTO "generation_history" ("userId", "prompt", "status", "creditCost")
+      VALUES (${user.id}, ${trimmedPrompt}, 'processing', ${GENERATION_COST})
+      RETURNING "id"`;
+    generationId = rows[0].id as string;
+
+    const newBalance = await deductCredit(
+      user.id,
+      GENERATION_COST,
+      `Generation: ${trimmedPrompt.slice(0, 80)}`,
+      generationId
+    );
+
+    if (newBalance === null) {
+      // Race condition: balance depleted between check and deduction
+      const errMsg = "Insufficient credits";
+      await sql`UPDATE "generation_history" SET "status" = 'failed', "errorMessage" = ${errMsg}, "completedAt" = NOW() WHERE "id" = ${generationId}`;
+      return res.status(403).json({
+        success: false,
+        error: "Insufficient credits",
+        credits: 0,
+      });
+    }
+  }
+
+  const startTime = Date.now();
+
   try {
     let generatedImage: string;
+    const provider = wavespeedKey ? "wavespeed" : "gemini";
 
     if (wavespeedKey) {
       console.log("[hairstyle] Using WaveSpeed Nano Banana Pro Edit API");
@@ -308,12 +364,55 @@ export default async function handler(
       );
     }
 
-    return res.status(200).json({ success: true, image: generatedImage });
+    // Record success for authenticated users
+    if (user && generationId) {
+      const elapsed = Date.now() - startTime;
+      const sql = getDb();
+      await sql`
+        UPDATE "generation_history"
+        SET "status" = 'completed', "provider" = ${provider}, "processingTimeMs" = ${elapsed}, "completedAt" = NOW()
+        WHERE "id" = ${generationId}`;
+    }
+
+    const responsePayload: Record<string, unknown> = {
+      success: true,
+      image: generatedImage,
+    };
+
+    if (user) {
+      responsePayload.credits = await getCreditBalance(user.id);
+    }
+
+    return res.status(200).json(responsePayload);
   } catch (error) {
     console.error("Error in hairstyle generation:", error);
 
     const message =
       error instanceof Error ? error.message : "Internal server error";
+
+    // Refund credit on failure for authenticated users
+    if (user && generationId) {
+      try {
+        await addCredits(
+          user.id,
+          GENERATION_COST,
+          "refund",
+          `Refund: generation failed - ${message.slice(0, 80)}`,
+          generationId
+        );
+        console.log(`[hairstyle] Credit refunded to user ${user.id}`);
+      } catch (refundErr) {
+        console.error("[hairstyle] Failed to refund credit:", refundErr);
+      }
+
+      const sql = getDb();
+      const errSlice = message.slice(0, 500);
+      await sql`
+        UPDATE "generation_history"
+        SET "status" = 'failed', "errorMessage" = ${errSlice}, "completedAt" = NOW()
+        WHERE "id" = ${generationId}`.catch(() => {});
+    }
+
     return res.status(500).json({ success: false, error: message });
   }
 }
