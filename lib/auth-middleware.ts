@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { auth } from "./auth";
+import { auth } from "./auth.js";
 import { fromNodeHeaders } from "better-auth/node";
 
 export interface AuthUser {

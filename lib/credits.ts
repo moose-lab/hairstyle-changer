@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { getDb } from "./db.js";
 
 /**
  * Get the current credit balance for a user.

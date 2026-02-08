@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireAuth } from "../../lib/auth-middleware";
-import { getCreditBalance } from "../../lib/credits";
+import { requireAuth } from "../../lib/auth-middleware.js";
+import { getCreditBalance } from "../../lib/credits.js";
 
 export default async function handler(
   req: VercelRequest,

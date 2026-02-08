@@ -2,10 +2,10 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import axios from "axios";
 import { z } from "zod";
 import { put, del } from "@vercel/blob";
-import { getAuthUser } from "../../lib/auth-middleware";
-import { getCreditBalance, deductCredit, addCredits } from "../../lib/credits";
-import { getDb } from "../../lib/db";
-import { GENERATION_COST } from "../../shared/const";
+import { getAuthUser } from "../../lib/auth-middleware.js";
+import { getCreditBalance, deductCredit, addCredits } from "../../lib/credits.js";
+import { getDb } from "../../lib/db.js";
+import { GENERATION_COST } from "../../shared/const.js";
 
 // Allow up to 120s for AI image generation (polling can take a while)
 export const config = { maxDuration: 120 };
