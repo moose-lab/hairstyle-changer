@@ -1,14 +1,16 @@
 import { betterAuth } from "better-auth";
-import { Pool, neon, neonConfig } from "@neondatabase/serverless";
-import ws from "ws";
-
-// Node.js doesn't have a built-in WebSocket; provide ws for @neondatabase/serverless Pool
-neonConfig.webSocketConstructor = ws;
+import { neon } from "@neondatabase/serverless";
+import pg from "pg";
 
 const connectionString = process.env.DATABASE_URL!;
 
-// Use Neon serverless Pool for Better Auth (WebSocket-compatible with Vercel)
-const pool = new Pool({ connectionString });
+// Use pg.Pool with short connection timeout for Vercel serverless
+const pool = new pg.Pool({
+  connectionString,
+  max: 1,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 10000,
+});
 
 // Use Neon HTTP query function for lightweight queries (credit_balance init)
 const sql = neon(connectionString);
