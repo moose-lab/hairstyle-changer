@@ -1,5 +1,9 @@
 import { betterAuth } from "better-auth";
-import { Pool, neon } from "@neondatabase/serverless";
+import { Pool, neon, neonConfig } from "@neondatabase/serverless";
+import ws from "ws";
+
+// Node.js doesn't have a built-in WebSocket; provide ws for @neondatabase/serverless Pool
+neonConfig.webSocketConstructor = ws;
 
 const connectionString = process.env.DATABASE_URL!;
 
