@@ -1,8 +1,16 @@
 import { betterAuth } from "better-auth";
-import pg from "pg";
+import { Pool, neon } from "@neondatabase/serverless";
+
+const connectionString = process.env.DATABASE_URL!;
+
+// Use Neon serverless Pool for Better Auth (WebSocket-compatible with Vercel)
+const pool = new Pool({ connectionString });
+
+// Use Neon HTTP query function for lightweight queries (credit_balance init)
+const sql = neon(connectionString);
 
 export const auth = betterAuth({
-  database: new pg.Pool({ connectionString: process.env.DATABASE_URL }),
+  database: pool,
 
   emailAndPassword: {
     enabled: true,
@@ -26,6 +34,27 @@ export const auth = betterAuth({
           },
         }
       : {}),
+  },
+
+  databaseHooks: {
+    user: {
+      create: {
+        after: async (user) => {
+          // Initialize credit balance for newly registered users
+          try {
+            await sql`
+              INSERT INTO "credit_balance" ("userId", "balance")
+              VALUES (${user.id}, 3)
+              ON CONFLICT ("userId") DO NOTHING`;
+            await sql`
+              INSERT INTO "credit_transaction" ("id", "userId", "amount", "type", "description")
+              VALUES (${crypto.randomUUID()}, ${user.id}, 3, 'signup_bonus', 'Welcome bonus credits')`;
+          } catch (err) {
+            console.error("[auth] Failed to initialize credits for user:", user.id, err);
+          }
+        },
+      },
+    },
   },
 
   session: {
