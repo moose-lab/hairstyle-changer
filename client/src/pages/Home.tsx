@@ -94,13 +94,26 @@ export default function Home() {
         }),
       });
 
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || "Failed to generate hairstyle");
+      // Guard against non-JSON responses (e.g. Vercel returning
+      // "Request Entity Too Large" as plain text / HTML)
+      let data: Record<string, unknown>;
+      const ct = response.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        throw new Error(
+          response.status === 413
+            ? "Image is too large. Please upload a smaller photo."
+            : text.slice(0, 200) || `Server error (${response.status})`
+        );
       }
 
-      setResultImage(data.image);
+      if (!response.ok || !data.success) {
+        throw new Error((data.error as string) || "Failed to generate hairstyle");
+      }
+
+      setResultImage(data.image as string);
 
       if (user) {
         // Refresh credits from server after successful generation

@@ -43,6 +43,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     try {
       const res = await fetch("/api/credits/balance", { credentials: "include" });
+      const ct = res.headers.get("content-type") || "";
+      if (!res.ok || !ct.includes("application/json")) return;
       const data = await res.json();
       if (data.success) {
         setCredits(data.credits);
