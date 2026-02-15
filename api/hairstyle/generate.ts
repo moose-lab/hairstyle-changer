@@ -284,13 +284,13 @@ export default async function handler(
 
   const { image, prompt } = parseResult.data;
 
-  // Check image size (max 10MB)
+  // Check image size (max 20MB – client compresses before upload so this is a generous safety net)
   const imageSize = getBase64Size(image);
-  const maxSize = 10 * 1024 * 1024;
+  const maxSize = 20 * 1024 * 1024;
   if (imageSize > maxSize) {
     return res.status(400).json({
       success: false,
-      error: `Image is too large. Maximum size is 10MB, got ${(imageSize / 1024 / 1024).toFixed(2)}MB`,
+      error: `Image is too large. Maximum size is 20MB, got ${(imageSize / 1024 / 1024).toFixed(2)}MB`,
     });
   }
 

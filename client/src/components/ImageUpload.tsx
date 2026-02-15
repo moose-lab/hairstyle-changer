@@ -3,6 +3,7 @@ import { Upload, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { compressImage } from "@/lib/image-compress";
 
 interface ImageUploadProps {
   onImageSelect: (imageData: string, mimeType: string) => void;
@@ -11,7 +12,7 @@ interface ImageUploadProps {
 }
 
 const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB in bytes
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB – we compress before upload
 
 export function ImageUpload({
   onImageSelect,
@@ -31,7 +32,7 @@ export function ImageUpload({
 
     if (file.size > MAX_FILE_SIZE) {
       toast.error("File too large", {
-        description: "Please upload an image smaller than 10MB.",
+        description: "Please upload an image smaller than 50MB.",
       });
       return false;
     }
@@ -39,32 +40,19 @@ export function ImageUpload({
     return true;
   };
 
-  const processFile = (file: File) => {
+  const processFile = async (file: File) => {
     if (!validateFile(file)) {
       return;
     }
 
-    const reader = new FileReader();
-
-    reader.onload = (e) => {
-      const result = e.target?.result as string;
-      if (result) {
-        // Extract base64 data without the data URL prefix
-        const base64Data = result.split(",")[1];
-        const mimeType = file.type;
-
-        // Call the parent callback with clean base64 and mimeType
-        onImageSelect(base64Data, mimeType);
-      }
-    };
-
-    reader.onerror = () => {
+    try {
+      const { base64, mimeType } = await compressImage(file);
+      onImageSelect(base64, mimeType);
+    } catch {
       toast.error("Upload failed", {
-        description: "Failed to read the image file. Please try again.",
+        description: "Failed to process the image. Please try again.",
       });
-    };
-
-    reader.readAsDataURL(file);
+    }
   };
 
   const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
@@ -169,7 +157,7 @@ export function ImageUpload({
                 Click to upload or drag and drop
               </p>
               <p className="text-sm text-gray-500">
-                PNG, JPEG, WEBP up to 10MB
+                PNG, JPEG, WEBP
               </p>
             </div>
           </div>
