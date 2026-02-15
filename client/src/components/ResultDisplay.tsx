@@ -18,15 +18,26 @@ export function ResultDisplay({
   error,
   onReset,
 }: ResultDisplayProps) {
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!resultImage) return;
 
-    const link = document.createElement("a");
-    link.href = resultImage;
-    link.download = "hairstyle-result.png";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      // Fetch the image as a blob so download works for any origin
+      const resp = await fetch(resultImage);
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = "hairstyle-result.png";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      // Fallback: open image in new tab
+      window.open(resultImage, "_blank");
+    }
   };
 
   // Don't render anything if there's nothing to show

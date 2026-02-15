@@ -85,11 +85,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function uploadToBlob(dataUrl: string): Promise<{ url: string }> {
+async function uploadToBlob(
+  dataUrl: string,
+  prefix = "hairstyle-input"
+): Promise<{ url: string }> {
   const { mimeType, data } = extractBase64(dataUrl);
   const buffer = Buffer.from(data, "base64");
   const ext = mimeType.split("/")[1] || "png";
-  const filename = `hairstyle-input-${Date.now()}.${ext}`;
+  const filename = `${prefix}-${Date.now()}.${ext}`;
 
   const blob = await put(filename, buffer, {
     access: "public",
@@ -374,9 +377,23 @@ export default async function handler(
         WHERE "id" = ${generationId}`;
     }
 
+    // If the result is a data-URL (base64), upload it to Vercel Blob so the
+    // JSON response stays small and within Vercel's response-size limit.
+    let imageForClient = generatedImage;
+    if (generatedImage.startsWith("data:")) {
+      try {
+        const { url } = await uploadToBlob(generatedImage, "hairstyle-result");
+        imageForClient = url;
+        console.log("[hairstyle] Result uploaded to blob:", url);
+      } catch (uploadErr) {
+        console.warn("[hairstyle] Blob upload failed, falling back to data URL", uploadErr);
+        // Fall back to inline data URL — may still work for smaller images
+      }
+    }
+
     const responsePayload: Record<string, unknown> = {
       success: true,
-      image: generatedImage,
+      image: imageForClient,
     };
 
     if (user) {
